@@ -1,6 +1,6 @@
 name: "TIS Screen Controller"
 description: "Drives the ST7789 display using spidev and gpiod."
-version: "1.0.4"
+version: "1.0.5"
 slug: "tis_display"
 init: false
 arch:
@@ -9,6 +9,7 @@ startup: application
 boot: auto
 devices:
   - /dev/spidev0.0:/dev/spidev0.0:rwm
+  - /dev/gpiomem:/dev/gpiomem:rwm
 gpio: true
 homeassistant_api: true
 options: {}
