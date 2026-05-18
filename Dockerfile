@@ -9,7 +9,7 @@ RUN apk add --no-cache \
   jpeg-dev zlib-dev freetype-dev
 
 # Install Python packages
-RUN pip3 install --no-cache-dir Pillow spidev gpiod requests
+RUN pip3 install --break-system-packages --no-cache-dir Pillow spidev gpiod requests
 
 COPY display.py /
 RUN chmod a+x /display.py
