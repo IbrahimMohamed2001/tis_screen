@@ -24,7 +24,30 @@ DC_PIN = 23
 RST_PIN = 25
 BLK_PIN = 12
 
-import RPi.GPIO as GPIO
+def init_gpio_pin(pin):
+    """Initialize a GPIO pin using sysfs."""
+    path = f"/sys/class/gpio/gpio{pin}"
+    if not os.path.exists(path):
+        try:
+            with open("/sys/class/gpio/export", "w") as f:
+                f.write(str(pin))
+            time.sleep(0.1) # Wait for kernel to create the node
+        except Exception as e:
+            print(f"Warning: Could not export GPIO {pin}: {e}")
+    try:
+        with open(f"{path}/direction", "w") as f:
+            f.write("out")
+    except Exception as e:
+        print(f"Warning: Could not set direction for GPIO {pin}: {e}")
+    return path
+
+def set_gpio_value(path, value):
+    """Set the value of a sysfs GPIO pin."""
+    try:
+        with open(f"{path}/value", "w") as f:
+            f.write("1" if value else "0")
+    except Exception:
+        pass
 
 def get_integration_version():
     """Read the custom integration version directly from the mapped HA config folder."""
@@ -48,19 +71,21 @@ class ST7789:
         self.spi.max_speed_hz = 10000000 # Lowered to 10MHz for debugging
         self.spi.mode = 0
         
-        # Init GPIO via RPi.GPIO (Memory Mapped, avoids SysFS permission issues)
-        print("Initializing GPIOs via RPi.GPIO...")
-        GPIO.setwarnings(False)
-        GPIO.setmode(GPIO.BCM)
-        
-        GPIO.setup(DC_PIN, GPIO.OUT)
-        GPIO.setup(RST_PIN, GPIO.OUT)
-        GPIO.setup(BLK_PIN, GPIO.OUT)
+        # Init GPIO via SysFS
+        print("Initializing GPIOs via SysFS...")
+        self.dc_path = init_gpio_pin(DC_PIN)
+        self.rst_path = init_gpio_pin(RST_PIN)
+        self.blk_path = init_gpio_pin(BLK_PIN)
         
         self.init_display()
 
     def _set_pin(self, pin, value):
-        GPIO.output(pin, GPIO.HIGH if value else GPIO.LOW)
+        if pin == DC_PIN:
+            set_gpio_value(self.dc_path, value)
+        elif pin == RST_PIN:
+            set_gpio_value(self.rst_path, value)
+        elif pin == BLK_PIN:
+            set_gpio_value(self.blk_path, value)
 
     def send_cmd(self, cmd):
         self._set_pin(DC_PIN, 0)
