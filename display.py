@@ -68,7 +68,7 @@ class ST7789:
         # Init SPI
         self.spi = spidev.SpiDev()
         self.spi.open(bus, device)
-        self.spi.max_speed_hz = 40000000
+        self.spi.max_speed_hz = 10000000 # Lowered to 10MHz for debugging
         self.spi.mode = 0
         
         # Init GPIO
