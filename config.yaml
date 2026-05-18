@@ -1,6 +1,6 @@
 name: "TIS Screen Controller"
 description: "Drives the ST7789 display using spidev and gpiod."
-version: "1.0.0"
+version: "1.0.1"
 slug: "tis_display"
 init: false
 arch:
