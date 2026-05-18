@@ -24,30 +24,30 @@ DC_PIN = 23
 RST_PIN = 25
 BLK_PIN = 12
 
-def find_gpio_chip():
-    """Find the correct gpiochip for BCM pins on Raspberry Pi 4/CM4."""
+def init_gpio_pin(pin):
+    """Initialize a GPIO pin using sysfs."""
+    path = f"/sys/class/gpio/gpio{pin}"
+    if not os.path.exists(path):
+        try:
+            with open("/sys/class/gpio/export", "w") as f:
+                f.write(str(pin))
+            time.sleep(0.1) # Wait for kernel to create the node
+        except Exception as e:
+            print(f"Warning: Could not export GPIO {pin}: {e}")
     try:
-        import gpiod
-        # Look for the chip with the pinctrl-bcm2711 or bcm2835 label
-        for i in range(10):
-            chip_path = f"/dev/gpiochip{i}"
-            if not os.path.exists(chip_path):
-                continue
-            try:
-                # gpiod v1 compatibility
-                if hasattr(gpiod, 'Chip'):
-                    with gpiod.Chip(chip_path) as chip:
-                        if "bcm" in chip.label().lower() or "pinctrl" in chip.label().lower():
-                            return chip_path
-                else:
-                    # gpiod v2 - Assume chip4 is typical for RPi4/CM4 BCM pins
-                    if i == 4:
-                        return chip_path
-            except Exception:
-                pass
-        return "/dev/gpiochip4" # Fallback typical for RPi4/CM4
-    except ImportError:
-        return "/dev/gpiochip4"
+        with open(f"{path}/direction", "w") as f:
+            f.write("out")
+    except Exception as e:
+        print(f"Warning: Could not set direction for GPIO {pin}: {e}")
+    return path
+
+def set_gpio_value(path, value):
+    """Set the value of a sysfs GPIO pin."""
+    try:
+        with open(f"{path}/value", "w") as f:
+            f.write("1" if value else "0")
+    except Exception:
+        pass
 
 def get_integration_version():
     """Read the custom integration version directly from the mapped HA config folder."""
@@ -71,54 +71,21 @@ class ST7789:
         self.spi.max_speed_hz = 10000000 # Lowered to 10MHz for debugging
         self.spi.mode = 0
         
-        # Init GPIO
-        import gpiod
-        chip_path = find_gpio_chip()
-        print(f"Using GPIO chip: {chip_path}")
+        # Init GPIO via SysFS
+        print("Initializing GPIOs via SysFS...")
+        self.dc_path = init_gpio_pin(DC_PIN)
+        self.rst_path = init_gpio_pin(RST_PIN)
+        self.blk_path = init_gpio_pin(BLK_PIN)
         
-        # Handle gpiod version differences (v1 vs v2)
-        try:
-            # Try gpiod v1 API
-            self.chip = gpiod.Chip(chip_path)
-            self.dc = self.chip.get_line(DC_PIN)
-            self.rst = self.chip.get_line(RST_PIN)
-            self.blk = self.chip.get_line(BLK_PIN)
-            
-            self.dc.request(consumer="ST7789_DC", type=gpiod.LINE_REQ_DIR_OUT)
-            self.rst.request(consumer="ST7789_RST", type=gpiod.LINE_REQ_DIR_OUT)
-            self.blk.request(consumer="ST7789_BLK", type=gpiod.LINE_REQ_DIR_OUT)
-            
-            self._set_pin = self._set_pin_v1
-            print("Initialized gpiod using v1 API.")
-        except AttributeError:
-            # Fallback to gpiod v2 API
-            from gpiod.line import Direction, Value
-            self.request = gpiod.request_lines(
-                chip_path,
-                consumer="ST7789",
-                config={
-                    DC_PIN: gpiod.LineSettings(direction=Direction.OUTPUT),
-                    RST_PIN: gpiod.LineSettings(direction=Direction.OUTPUT),
-                    BLK_PIN: gpiod.LineSettings(direction=Direction.OUTPUT, output_value=Value.ACTIVE)
-                }
-            )
-            self._set_pin = self._set_pin_v2
-            print("Initialized gpiod using v2 API.")
-
         self.init_display()
 
-    def _set_pin_v1(self, pin, value):
+    def _set_pin(self, pin, value):
         if pin == DC_PIN:
-            self.dc.set_value(value)
+            set_gpio_value(self.dc_path, value)
         elif pin == RST_PIN:
-            self.rst.set_value(value)
+            set_gpio_value(self.rst_path, value)
         elif pin == BLK_PIN:
-            self.blk.set_value(value)
-            
-    def _set_pin_v2(self, pin, value):
-        from gpiod.line import Value
-        val = Value.ACTIVE if value else Value.INACTIVE
-        self.request.set_value(pin, val)
+            set_gpio_value(self.blk_path, value)
 
     def send_cmd(self, cmd):
         self._set_pin(DC_PIN, 0)
