@@ -1,0 +1,17 @@
+ARG BUILD_FROM=ghcr.io/home-assistant/aarch64-base:latest
+FROM $BUILD_FROM
+
+# Install dependencies for Pillow and native hardware tools
+RUN apk add --no-cache \
+  python3 py3-pip \
+  gcc musl-dev python3-dev \
+  linux-headers \
+  jpeg-dev zlib-dev freetype-dev
+
+# Install Python packages
+RUN pip3 install --no-cache-dir Pillow spidev gpiod requests
+
+COPY display.py /
+RUN chmod a+x /display.py
+
+CMD [ "/display.py" ]
