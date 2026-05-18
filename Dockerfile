@@ -6,12 +6,14 @@ RUN apk add --no-cache \
   python3 py3-pip \
   gcc musl-dev python3-dev \
   linux-headers \
-  jpeg-dev zlib-dev freetype-dev
+  jpeg-dev zlib-dev freetype-dev \
+  ttf-dejavu
 
 # Install Python packages
 RUN pip3 install --break-system-packages --no-cache-dir Pillow spidev gpiod requests
 
 COPY display.py /
+COPY logo.png /
 RUN chmod a+x /display.py
 
-CMD [ "/display.py" ]
+CMD [ "python3", "/display.py" ]
