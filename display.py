@@ -65,12 +65,20 @@ class ST7789:
         logger.info("Initializing GPIOs via gpiod...")
         self.chip = None
         logger.debug("Searching for BCM gpiochip...")
-        for chip_path in gpiod.find_gpio_chips():
+        import glob
+        chip_paths = glob.glob("/dev/gpiochip*")
+        if not chip_paths:
+            logger.error("No /dev/gpiochip* devices found! full_access might not be working or devtmpfs is not mounted.")
+            
+        for chip_path in chip_paths:
             try:
                 chip = gpiod.Chip(chip_path)
                 lines = chip.num_lines()
-                logger.debug(f"Found {chip_path} with {lines} lines.")
-                if lines == 58 or lines == 54:  # BCM2711 usually has 58 lines
+                name = chip.name()
+                label = chip.label()
+                logger.debug(f"Found {chip_path}: Name='{name}', Label='{label}', Lines={lines}")
+                # BCM2711 main GPIO usually has 54 or 58 lines. 'pinctrl-bcm2711' is the label.
+                if lines >= 50 or "bcm" in label.lower():
                     self.chip = chip
                     logger.info(f"Selected {chip_path} as the main GPIO controller.")
                     break
