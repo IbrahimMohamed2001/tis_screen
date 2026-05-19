@@ -300,9 +300,10 @@ def render_display():
         display.display_image(img)
         
     logger.info("=== Display rendering successfully finished ===")
+    return display
 
 if __name__ == "__main__":
-    render_display()
+    active_display = render_display()
     
     # Keep the container running
     logger.info("Entering idle loop to keep container alive...")
