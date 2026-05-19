@@ -4,6 +4,7 @@ import json
 import struct
 import spidev
 import gpiod
+from gpiod.line import Direction, Value
 import logging
 from PIL import Image, ImageDraw, ImageFont
 
@@ -63,7 +64,7 @@ class ST7789:
             
         # Init GPIO via libgpiod
         logger.info("Initializing GPIOs via gpiod...")
-        self.chip = None
+        self.chip_path = None
         logger.debug("Searching for BCM gpiochip...")
         import glob
         chip_paths = glob.glob("/dev/gpiochip*")
@@ -72,33 +73,35 @@ class ST7789:
             
         for chip_path in chip_paths:
             try:
-                chip = gpiod.Chip(chip_path)
-                lines = chip.num_lines()
-                name = chip.name()
-                label = chip.label()
-                logger.debug(f"Found {chip_path}: Name='{name}', Label='{label}', Lines={lines}")
-                # BCM2711 main GPIO usually has 54 or 58 lines. 'pinctrl-bcm2711' is the label.
-                if lines >= 50 or "bcm" in label.lower():
-                    self.chip = chip
-                    logger.info(f"Selected {chip_path} as the main GPIO controller.")
-                    break
+                with gpiod.Chip(chip_path) as chip:
+                    info = chip.get_info()
+                    lines = info.num_lines
+                    name = info.name
+                    label = info.label
+                    logger.debug(f"Found {chip_path}: Name='{name}', Label='{label}', Lines={lines}")
+                    # BCM2711 main GPIO usually has 54 or 58 lines. 'pinctrl-bcm2711' is the label.
+                    if lines >= 50 or "bcm" in label.lower():
+                        self.chip_path = chip_path
+                        logger.info(f"Selected {chip_path} as the main GPIO controller.")
+                        break
             except Exception as e:
                 logger.warning(f"Failed to inspect {chip_path}: {e}")
                 
-        if not self.chip:
+        if not self.chip_path:
             logger.critical("Could not find a suitable BCM gpiochip! Are we running with full_access: true?")
             raise RuntimeError("No suitable gpiochip found.")
             
         # Request lines
         try:
-            self.dc_line = self.chip.get_line(DC_PIN)
-            self.dc_line.request(consumer="ST7789_DC", type=gpiod.LINE_REQ_DIR_OUT)
-            
-            self.rst_line = self.chip.get_line(RST_PIN)
-            self.rst_line.request(consumer="ST7789_RST", type=gpiod.LINE_REQ_DIR_OUT)
-            
-            self.blk_line = self.chip.get_line(BLK_PIN)
-            self.blk_line.request(consumer="ST7789_BLK", type=gpiod.LINE_REQ_DIR_OUT)
+            self.request = gpiod.request_lines(
+                self.chip_path,
+                consumer="ST7789",
+                config={
+                    DC_PIN: gpiod.LineSettings(direction=Direction.OUTPUT, output_value=Value.INACTIVE),
+                    RST_PIN: gpiod.LineSettings(direction=Direction.OUTPUT, output_value=Value.INACTIVE),
+                    BLK_PIN: gpiod.LineSettings(direction=Direction.OUTPUT, output_value=Value.INACTIVE)
+                }
+            )
             logger.debug("GPIO lines successfully requested as OUTPUT.")
         except Exception as e:
             logger.critical(f"Failed to request GPIO lines: {e}")
@@ -108,12 +111,8 @@ class ST7789:
 
     def _set_pin(self, pin, value):
         try:
-            if pin == DC_PIN:
-                self.dc_line.set_value(1 if value else 0)
-            elif pin == RST_PIN:
-                self.rst_line.set_value(1 if value else 0)
-            elif pin == BLK_PIN:
-                self.blk_line.set_value(1 if value else 0)
+            val = Value.ACTIVE if value else Value.INACTIVE
+            self.request.set_value(pin, val)
         except Exception as e:
             logger.error(f"Error setting pin {pin} to {value}: {e}")
 
