@@ -10,7 +10,7 @@ RUN apk add --no-cache \
   ttf-dejavu
 
 # Install Python packages
-RUN pip3 install --break-system-packages --no-cache-dir Pillow spidev gpiod requests
+RUN pip3 install --break-system-packages --no-cache-dir Pillow gpiod
 
 COPY display.py /
 COPY logo.png /
