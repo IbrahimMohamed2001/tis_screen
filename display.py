@@ -9,27 +9,30 @@ import logging
 from PIL import Image, ImageDraw, ImageFont
 
 # Set up comprehensive logging
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------
 # ST7789 Commands and Setup
 # ---------------------------------------------------------
 ST7789_SWRESET = 0x01
-ST7789_SLPOUT  = 0x11
-ST7789_NORON   = 0x13
-ST7789_INVON   = 0x21
-ST7789_DISPON  = 0x29
-ST7789_CASET   = 0x2A
-ST7789_RASET   = 0x2B
-ST7789_RAMWR   = 0x2C
-ST7789_COLMOD  = 0x3A
-ST7789_MADCTL  = 0x36
+ST7789_SLPOUT = 0x11
+ST7789_NORON = 0x13
+ST7789_INVON = 0x21
+ST7789_DISPON = 0x29
+ST7789_CASET = 0x2A
+ST7789_RASET = 0x2B
+ST7789_RAMWR = 0x2C
+ST7789_COLMOD = 0x3A
+ST7789_MADCTL = 0x36
 
 # CM4Stack Display BCM Pins
 DC_PIN = 23
 RST_PIN = 25
 BLK_PIN = 12
+
 
 def get_integration_version():
     """Read the custom integration version directly from the mapped HA config folder."""
@@ -45,32 +48,38 @@ def get_integration_version():
         logger.error(f"Error reading manifest from {manifest_path}: {e}")
         return "Unknown"
 
+
 class ST7789:
     def __init__(self, bus=0, device=0, width=240, height=320):
         self.width = width
         self.height = height
-        
+
         # Init SPI
         logger.info(f"Initializing SPI on bus {bus}, device {device}")
         try:
             self.spi = spidev.SpiDev()
             self.spi.open(bus, device)
-            self.spi.max_speed_hz = 10000000 # Lowered to 10MHz for debugging
+            self.spi.max_speed_hz = 10000000  # Lowered to 10MHz for debugging
             self.spi.mode = 0
-            logger.debug(f"SPI initialized successfully (Mode: {self.spi.mode}, Speed: {self.spi.max_speed_hz}Hz)")
+            logger.debug(
+                f"SPI initialized successfully (Mode: {self.spi.mode}, Speed: {self.spi.max_speed_hz}Hz)"
+            )
         except Exception as e:
             logger.error(f"Failed to open SPI: {e}")
             raise
-            
+
         # Init GPIO via libgpiod
         logger.info("Initializing GPIOs via gpiod...")
         self.chip_path = None
         logger.debug("Searching for BCM gpiochip...")
         import glob
+
         chip_paths = glob.glob("/dev/gpiochip*")
         if not chip_paths:
-            logger.error("No /dev/gpiochip* devices found! full_access might not be working or devtmpfs is not mounted.")
-            
+            logger.error(
+                "No /dev/gpiochip* devices found! full_access might not be working or devtmpfs is not mounted."
+            )
+
         for chip_path in chip_paths:
             try:
                 with gpiod.Chip(chip_path) as chip:
@@ -78,35 +87,47 @@ class ST7789:
                     lines = info.num_lines
                     name = info.name
                     label = info.label
-                    logger.debug(f"Found {chip_path}: Name='{name}', Label='{label}', Lines={lines}")
+                    logger.debug(
+                        f"Found {chip_path}: Name='{name}', Label='{label}', Lines={lines}"
+                    )
                     # BCM2711 main GPIO usually has 54 or 58 lines. 'pinctrl-bcm2711' is the label.
                     if lines >= 50 or "bcm" in label.lower():
                         self.chip_path = chip_path
-                        logger.info(f"Selected {chip_path} as the main GPIO controller.")
+                        logger.info(
+                            f"Selected {chip_path} as the main GPIO controller."
+                        )
                         break
             except Exception as e:
                 logger.warning(f"Failed to inspect {chip_path}: {e}")
-                
+
         if not self.chip_path:
-            logger.critical("Could not find a suitable BCM gpiochip! Are we running with full_access: true?")
+            logger.critical(
+                "Could not find a suitable BCM gpiochip! Are we running with full_access: true?"
+            )
             raise RuntimeError("No suitable gpiochip found.")
-            
+
         # Request lines
         try:
             self.request = gpiod.request_lines(
                 self.chip_path,
                 consumer="ST7789",
                 config={
-                    DC_PIN: gpiod.LineSettings(direction=Direction.OUTPUT, output_value=Value.INACTIVE),
-                    RST_PIN: gpiod.LineSettings(direction=Direction.OUTPUT, output_value=Value.INACTIVE),
-                    BLK_PIN: gpiod.LineSettings(direction=Direction.OUTPUT, output_value=Value.INACTIVE)
-                }
+                    DC_PIN: gpiod.LineSettings(
+                        direction=Direction.OUTPUT, output_value=Value.INACTIVE
+                    ),
+                    RST_PIN: gpiod.LineSettings(
+                        direction=Direction.OUTPUT, output_value=Value.INACTIVE
+                    ),
+                    BLK_PIN: gpiod.LineSettings(
+                        direction=Direction.OUTPUT, output_value=Value.INACTIVE
+                    ),
+                },
             )
             logger.debug("GPIO lines successfully requested as OUTPUT.")
         except Exception as e:
             logger.critical(f"Failed to request GPIO lines: {e}")
             raise
-        
+
         self.init_display()
 
     def _set_pin(self, pin, value):
@@ -146,10 +167,10 @@ class ST7789:
 
         logger.debug("Configuring color mode and MADCTL...")
         self.send_cmd(ST7789_COLMOD)
-        self.send_data(0x55) # 16-bit RGB565 format
-        
+        self.send_data(0x55)  # 16-bit RGB565 format
+
         self.send_cmd(ST7789_MADCTL)
-        self.send_data(0x00) # Portrait mode
+        self.send_data(0x00)  # Portrait mode
 
         logger.debug("Turning display ON...")
         self.send_cmd(ST7789_INVON)
@@ -157,7 +178,7 @@ class ST7789:
         time.sleep(0.01)
         self.send_cmd(ST7789_DISPON)
         time.sleep(0.1)
-        
+
         # Turn on Backlight
         logger.info("Turning ON backlight (BLK_PIN=1)...")
         self._set_pin(BLK_PIN, 1)
@@ -175,40 +196,45 @@ class ST7789:
         # Ensure image matches screen size
         if image.size != (self.width, self.height):
             image = image.resize((self.width, self.height))
-            
+
         # Convert image to RGB if not already
         image = image.convert("RGB")
-        
+
         # Convert to raw RGB565 byte array
         r, g, b = image.split()
         r_data = list(r.getdata())
         g_data = list(g.getdata())
         b_data = list(b.getdata())
-        
+
         rgb565 = bytearray(self.width * self.height * 2)
-        
+
         for i in range(len(r_data)):
-            pixel = ((r_data[i] & 0xF8) << 8) | ((g_data[i] & 0xFC) << 3) | (b_data[i] >> 3)
-            rgb565[i*2] = pixel >> 8
-            rgb565[i*2+1] = pixel & 0xFF
+            pixel = (
+                ((r_data[i] & 0xF8) << 8) | ((g_data[i] & 0xFC) << 3) | (b_data[i] >> 3)
+            )
+            rgb565[i * 2] = pixel >> 8
+            rgb565[i * 2 + 1] = pixel & 0xFF
 
         logger.info("Writing pixel data to SPI bus...")
         self.set_window(0, 0, self.width - 1, self.height - 1)
         self._set_pin(DC_PIN, 1)
-        
+
         # Send data in chunks
         chunk_size = 4096
         for i in range(0, len(rgb565), chunk_size):
-            self.spi.writebytes2(rgb565[i:i+chunk_size])
-        
+            self.spi.writebytes2(rgb565[i : i + chunk_size])
+
         logger.info("Pixel data transfer complete.")
+
 
 def render_display():
     logger.info("=== Starting display rendering ===")
-    
+
     use_fb0 = os.path.exists("/dev/fb0")
     if use_fb0:
-        logger.warning("!!! /dev/fb0 DETECTED !!! The OS has already loaded a frame buffer driver for a screen. We will write to /dev/fb0 directly.")
+        logger.warning(
+            "!!! /dev/fb0 DETECTED !!! The OS has already loaded a frame buffer driver for a screen. We will write to /dev/fb0 directly."
+        )
     else:
         logger.info("No /dev/fb0 detected, using direct SPI and gpiod.")
 
@@ -225,7 +251,7 @@ def render_display():
     # Attempt to load the logo
     base_dir = os.path.dirname(os.path.abspath(__file__))
     possible_paths = ["/logo.png", os.path.join(base_dir, "logo.png")]
-    
+
     img = None
     for path in possible_paths:
         if os.path.exists(path):
@@ -233,25 +259,30 @@ def render_display():
             img = Image.open(path).convert("RGB")
             img = img.resize((240, 320))
             break
-            
+
     if img is None:
-        logger.warning("logo.png not found in any standard path. Creating a solid background fallback.")
+        logger.warning(
+            "logo.png not found in any standard path. Creating a solid background fallback."
+        )
         img = Image.new("RGB", (240, 320), color=(40, 40, 40))
 
     draw = ImageDraw.Draw(img)
-    
+
     # Try to load a reasonable font, fallback to default
     try:
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 28)
+        font = ImageFont.truetype(
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 28
+        )
         logger.debug("Loaded TrueType font successfully.")
     except IOError:
         logger.warning("TrueType font not found, falling back to default pixel font.")
         font = ImageFont.load_default()
 
     text = f"v{version}"
-    
+
     # Calculate text bounding box
     import warnings
+
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)
         try:
@@ -260,17 +291,17 @@ def render_display():
             text_height = bbox[3] - bbox[1]
         except AttributeError:
             text_width, text_height = draw.textsize(text, font=font)
-        
+
     # Center text horizontally, place near bottom
     x = (240 - text_width) // 2
     y = 320 - text_height - 30
-    
+
     # Draw dark shadow/outline for readability against any background
     shadow_color = (0, 0, 0)
     for dx in [-2, -1, 1, 2]:
         for dy in [-2, -1, 1, 2]:
             draw.text((x + dx, y + dy), text, font=font, fill=shadow_color)
-            
+
     # Draw main text
     draw.text((x, y), text, font=font, fill=(255, 255, 255))
 
@@ -281,14 +312,16 @@ def render_display():
         r_data = list(r.getdata())
         g_data = list(g.getdata())
         b_data = list(b.getdata())
-        
+
         fb_data = bytearray(240 * 320 * 2)
         for i in range(len(r_data)):
-            pixel = ((r_data[i] & 0xF8) << 8) | ((g_data[i] & 0xFC) << 3) | (b_data[i] >> 3)
+            pixel = (
+                ((r_data[i] & 0xF8) << 8) | ((g_data[i] & 0xFC) << 3) | (b_data[i] >> 3)
+            )
             # Little-endian byte order for /dev/fb0
-            fb_data[i*2] = pixel & 0xFF
-            fb_data[i*2+1] = pixel >> 8
-            
+            fb_data[i * 2] = pixel & 0xFF
+            fb_data[i * 2 + 1] = pixel >> 8
+
         try:
             with open("/dev/fb0", "wb") as f:
                 f.write(fb_data)
@@ -298,13 +331,14 @@ def render_display():
     else:
         logger.info("Image processing complete. Sending to display hardware via SPI...")
         display.display_image(img)
-        
+
     logger.info("=== Display rendering successfully finished ===")
     return display
 
+
 if __name__ == "__main__":
     active_display = render_display()
-    
+
     # Keep the container running
     logger.info("Entering idle loop to keep container alive...")
     while True:
