@@ -1,11 +1,12 @@
 import os
 import time
 import json
+import struct
+import spidev
 import gpiod
 from gpiod.line import Direction, Value
 import logging
 from PIL import Image, ImageDraw, ImageFont
-import spidev
 
 # Set up comprehensive logging
 logging.basicConfig(
@@ -34,54 +35,18 @@ BLK_PIN = 12
 
 
 def get_integration_version():
+    """Read the custom integration version directly from the mapped HA config folder."""
     manifest_path = "/config/custom_components/tis_integration/manifest.json"
+    logger.info(f"Looking for manifest at {manifest_path}")
     try:
         with open(manifest_path, "r") as f:
             data = json.load(f)
-            return data.get("version", "Unknown")
-    except Exception:
-        return "Unknown"
-
-
-def enable_backlight():
-    """Turns on the backlight independently of the SPI display class."""
-    logger.info("Initializing backlight on BCM pin 12...")
-    import glob
-
-    chip_paths = glob.glob("/dev/gpiochip*")
-    chip_path = None
-
-    for cp in chip_paths:
-        try:
-            with gpiod.Chip(cp) as chip:
-                info = chip.get_info()
-                if info.num_lines >= 50 or "bcm" in info.label.lower():
-                    chip_path = cp
-                    break
-        except Exception:
-            pass
-
-    if not chip_path:
-        logger.error("Could not find GPIO chip for backlight.")
-        return None
-
-    try:
-        # Request just the backlight pin and set it ACTIVE
-        req_blk = gpiod.request_lines(
-            chip_path,
-            consumer="ST7789_BLK",
-            config={
-                BLK_PIN: gpiod.LineSettings(
-                    direction=Direction.OUTPUT, output_value=Value.ACTIVE
-                )
-            },
-        )
-        logger.info("Backlight successfully turned ON.")
-        # We MUST return this object. If it gets garbage collected, the pin drops to LOW.
-        return req_blk
+            ver = data.get("version", "Unknown")
+            logger.info(f"Found version: {ver}")
+            return ver
     except Exception as e:
-        logger.error(f"Failed to turn on backlight: {e}")
-        return None
+        logger.error(f"Error reading manifest from {manifest_path}: {e}")
+        return "Unknown"
 
 
 class ST7789:
@@ -89,45 +54,105 @@ class ST7789:
         self.width = width
         self.height = height
 
+        # Init SPI
+        logger.info(f"Initializing SPI on bus {bus}, device {device}")
         try:
             self.spi = spidev.SpiDev()
             self.spi.open(bus, device)
-            self.spi.max_speed_hz = 10000000
+            self.spi.max_speed_hz = 10000000  # Lowered to 10MHz for debugging
             self.spi.mode = 0
+            logger.debug(
+                f"SPI initialized successfully (Mode: {self.spi.mode}, Speed: {self.spi.max_speed_hz}Hz)"
+            )
         except Exception as e:
             logger.error(f"Failed to open SPI: {e}")
             raise
 
-        self.chip_path = "/dev/gpiochip0"  # Simplified for fallback
+        # Init GPIO via libgpiod
+        logger.info("Initializing GPIOs via gpiod...")
+        self.chip_path = None
+        logger.debug("Searching for BCM gpiochip...")
+        import glob
 
-        # Notice we removed BLK_PIN from here! The enable_backlight() function handles it now.
-        self.req_dc = gpiod.request_lines(
-            self.chip_path,
-            consumer="ST7789_DC",
-            config={
-                DC_PIN: gpiod.LineSettings(
-                    direction=Direction.OUTPUT, output_value=Value.INACTIVE
-                )
-            },
-        )
-        self.req_rst = gpiod.request_lines(
-            self.chip_path,
-            consumer="ST7789_RST",
-            config={
-                RST_PIN: gpiod.LineSettings(
-                    direction=Direction.OUTPUT, output_value=Value.INACTIVE
-                )
-            },
-        )
+        chip_paths = glob.glob("/dev/gpiochip*")
+        if not chip_paths:
+            logger.error(
+                "No /dev/gpiochip* devices found! full_access might not be working or devtmpfs is not mounted."
+            )
+
+        for chip_path in chip_paths:
+            try:
+                with gpiod.Chip(chip_path) as chip:
+                    info = chip.get_info()
+                    lines = info.num_lines
+                    name = info.name
+                    label = info.label
+                    logger.debug(
+                        f"Found {chip_path}: Name='{name}', Label='{label}', Lines={lines}"
+                    )
+                    # BCM2711 main GPIO usually has 54 or 58 lines. 'pinctrl-bcm2711' is the label.
+                    if lines >= 50 or "bcm" in label.lower():
+                        self.chip_path = chip_path
+                        logger.info(
+                            f"Selected {chip_path} as the main GPIO controller."
+                        )
+                        break
+            except Exception as e:
+                logger.warning(f"Failed to inspect {chip_path}: {e}")
+
+        if not self.chip_path:
+            logger.critical(
+                "Could not find a suitable BCM gpiochip! Are we running with full_access: true?"
+            )
+            raise RuntimeError("No suitable gpiochip found.")
+
+        # Request lines separately to prevent multi-line state bugs
+        try:
+            self.req_dc = gpiod.request_lines(
+                self.chip_path,
+                consumer="ST7789_DC",
+                config={
+                    DC_PIN: gpiod.LineSettings(
+                        direction=Direction.OUTPUT, output_value=Value.INACTIVE
+                    )
+                },
+            )
+            self.req_rst = gpiod.request_lines(
+                self.chip_path,
+                consumer="ST7789_RST",
+                config={
+                    RST_PIN: gpiod.LineSettings(
+                        direction=Direction.OUTPUT, output_value=Value.INACTIVE
+                    )
+                },
+            )
+            self.req_blk = gpiod.request_lines(
+                self.chip_path,
+                consumer="ST7789_BLK",
+                config={
+                    BLK_PIN: gpiod.LineSettings(
+                        direction=Direction.OUTPUT
+                    )
+                },
+            )
+            logger.debug("GPIO lines successfully requested as OUTPUT.")
+        except Exception as e:
+            logger.critical(f"Failed to request GPIO lines: {e}")
+            raise
 
         self.init_display()
 
     def _set_pin(self, pin, value):
-        val = Value.ACTIVE if value else Value.INACTIVE
-        if pin == DC_PIN:
-            self.req_dc.set_value(DC_PIN, val)
-        elif pin == RST_PIN:
-            self.req_rst.set_value(RST_PIN, val)
+        try:
+            val = Value.ACTIVE if value else Value.INACTIVE
+            if pin == DC_PIN:
+                self.req_dc.set_value(DC_PIN, val)
+            elif pin == RST_PIN:
+                self.req_rst.set_value(RST_PIN, val)
+            elif pin == BLK_PIN:
+                self.req_blk.set_value(BLK_PIN, val)
+        except Exception as e:
+            logger.error(f"Error setting pin {pin} to {value}: {e}")
 
     def send_cmd(self, cmd):
         self._set_pin(DC_PIN, 0)
@@ -141,6 +166,9 @@ class ST7789:
             self.spi.writebytes2(data)
 
     def init_display(self):
+        logger.info("Starting ST7789 hardware initialization sequence...")
+        # Reset display
+        logger.debug("Asserting hardware reset...")
         self._set_pin(RST_PIN, 1)
         time.sleep(0.1)
         self._set_pin(RST_PIN, 0)
@@ -148,19 +176,30 @@ class ST7789:
         self._set_pin(RST_PIN, 1)
         time.sleep(0.1)
 
+        logger.debug("Sending SWRESET and SLPOUT...")
         self.send_cmd(ST7789_SWRESET)
         time.sleep(0.15)
         self.send_cmd(ST7789_SLPOUT)
         time.sleep(0.15)
+
+        logger.debug("Configuring color mode and MADCTL...")
         self.send_cmd(ST7789_COLMOD)
-        self.send_data(0x55)
+        self.send_data(0x55)  # 16-bit RGB565 format
+
         self.send_cmd(ST7789_MADCTL)
-        self.send_data(0x00)
+        self.send_data(0x00)  # Portrait mode
+
+        logger.debug("Turning display ON...")
         self.send_cmd(ST7789_INVON)
         self.send_cmd(ST7789_NORON)
         time.sleep(0.01)
         self.send_cmd(ST7789_DISPON)
         time.sleep(0.1)
+
+        # Turn on Backlight
+        logger.info("Turning ON backlight (BLK_PIN=1)...")
+        self._set_pin(BLK_PIN, 1)
+        logger.info("Hardware initialization complete.")
 
     def set_window(self, x0, y0, x1, y1):
         self.send_cmd(ST7789_CASET)
@@ -170,13 +209,22 @@ class ST7789:
         self.send_cmd(ST7789_RAMWR)
 
     def display_image(self, image):
+        logger.info("Formatting image for ST7789 (RGB565 conversion)...")
+        # Ensure image matches screen size
         if image.size != (self.width, self.height):
             image = image.resize((self.width, self.height))
+
+        # Convert image to RGB if not already
         image = image.convert("RGB")
+
+        # Convert to raw RGB565 byte array
         r, g, b = image.split()
-        r_data, g_data, b_data = list(r.getdata()), list(g.getdata()), list(b.getdata())
+        r_data = list(r.getdata())
+        g_data = list(g.getdata())
+        b_data = list(b.getdata())
 
         rgb565 = bytearray(self.width * self.height * 2)
+
         for i in range(len(r_data)):
             pixel = (
                 ((r_data[i] & 0xF8) << 8) | ((g_data[i] & 0xFC) << 3) | (b_data[i] >> 3)
@@ -184,96 +232,135 @@ class ST7789:
             rgb565[i * 2] = pixel >> 8
             rgb565[i * 2 + 1] = pixel & 0xFF
 
+        logger.info("Writing pixel data to SPI bus...")
         self.set_window(0, 0, self.width - 1, self.height - 1)
         self._set_pin(DC_PIN, 1)
-        for i in range(0, len(rgb565), 4096):
-            self.spi.writebytes2(rgb565[i : i + 4096])
+
+        # Send data in chunks
+        chunk_size = 4096
+        for i in range(0, len(rgb565), chunk_size):
+            self.spi.writebytes2(rgb565[i : i + chunk_size])
+
+        logger.info("Pixel data transfer complete.")
 
 
 def render_display():
     logger.info("=== Starting display rendering ===")
 
-    # 1. ALWAYS turn on the backlight first!
-    backlight_req = enable_backlight()
-
     use_fb0 = os.path.exists("/dev/fb0")
-    display = None
-
     if use_fb0:
-        logger.warning("!!! /dev/fb0 DETECTED !!! Writing to framebuffer directly.")
+        logger.warning(
+            "!!! /dev/fb0 DETECTED !!! The OS has already loaded a frame buffer driver for a screen. We will write to /dev/fb0 directly."
+        )
     else:
         logger.info("No /dev/fb0 detected, using direct SPI and gpiod.")
+
+    version = get_integration_version()
+
+    display = None
+    if not use_fb0:
         try:
             display = ST7789(width=240, height=320)
         except Exception as e:
             logger.critical(f"Failed to initialize ST7789: {e}")
+            return
 
-    version = get_integration_version()
+    # Attempt to load the logo
     base_dir = os.path.dirname(os.path.abspath(__file__))
     possible_paths = ["/logo.png", os.path.join(base_dir, "logo.png")]
 
     img = None
     for path in possible_paths:
         if os.path.exists(path):
+            logger.info(f"Loading logo image from {path}")
             img = Image.open(path).convert("RGB")
             img = img.resize((240, 320))
             break
 
     if img is None:
+        logger.warning(
+            "logo.png not found in any standard path. Creating a solid background fallback."
+        )
         img = Image.new("RGB", (240, 320), color=(40, 40, 40))
 
     draw = ImageDraw.Draw(img)
+
+    # Try to load a reasonable font, fallback to default
     try:
         font = ImageFont.truetype(
             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 28
         )
+        logger.debug("Loaded TrueType font successfully.")
     except IOError:
+        logger.warning("TrueType font not found, falling back to default pixel font.")
         font = ImageFont.load_default()
 
     text = f"v{version}"
-    try:
-        bbox = draw.textbbox((0, 0), text, font=font)
-        text_width, text_height = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    except AttributeError:
-        text_width, text_height = draw.textsize(text, font=font)
 
+    # Calculate text bounding box
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        try:
+            bbox = draw.textbbox((0, 0), text, font=font)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+        except AttributeError:
+            text_width, text_height = draw.textsize(text, font=font)
+
+    # Center text horizontally, place near bottom
     x = (240 - text_width) // 2
     y = 320 - text_height - 30
 
+    # Draw dark shadow/outline for readability against any background
+    shadow_color = (0, 0, 0)
     for dx in [-2, -1, 1, 2]:
         for dy in [-2, -1, 1, 2]:
-            draw.text((x + dx, y + dy), text, font=font, fill=(0, 0, 0))
+            draw.text((x + dx, y + dy), text, font=font, fill=shadow_color)
+
+    # Draw main text
     draw.text((x, y), text, font=font, fill=(255, 255, 255))
 
     if use_fb0:
+        logger.info("Writing image directly to /dev/fb0...")
+        # Framebuffer RGB565 is little-endian on ARM
         r, g, b = img.split()
-        r_data, g_data, b_data = list(r.getdata()), list(g.getdata()), list(b.getdata())
+        r_data = list(r.getdata())
+        g_data = list(g.getdata())
+        b_data = list(b.getdata())
+
         fb_data = bytearray(240 * 320 * 2)
         for i in range(len(r_data)):
             pixel = (
                 ((r_data[i] & 0xF8) << 8) | ((g_data[i] & 0xFC) << 3) | (b_data[i] >> 3)
             )
+            # Little-endian byte order for /dev/fb0
             fb_data[i * 2] = pixel & 0xFF
             fb_data[i * 2 + 1] = pixel >> 8
 
         try:
             with open("/dev/fb0", "wb") as f:
                 f.write(fb_data)
+            logger.info("Framebuffer write complete.")
         except Exception as e:
             logger.error(f"Failed to write to /dev/fb0: {e}")
     else:
-        if display:
-            display.display_image(img)
+        logger.info("Image processing complete. Sending to display hardware via SPI...")
+        display.display_image(img)
+        logger.info("SPI transfer complete. Enforcing backlight ON.")
+        display._set_pin(12, 1)
 
     logger.info("=== Display rendering successfully finished ===")
-
-    # Return BOTH so they stay alive in memory
-    return display, backlight_req
+    return display
 
 
 if __name__ == "__main__":
-    active_display, active_backlight = render_display()
+    active_display = render_display()
 
+    # Keep the container running
     logger.info("Entering idle loop to keep container alive...")
     while True:
-        time.sleep(3600)
+        if active_display:
+            active_display._set_pin(12, 1)
+        time.sleep(10)
