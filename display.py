@@ -183,7 +183,7 @@ class ST7789:
         time.sleep(0.01)
         self.send_cmd(ST7789_DISPON)
         time.sleep(0.1)
-        
+
         logger.info("Hardware initialization complete.")
 
     def set_window(self, x0, y0, x1, y1):
@@ -342,22 +342,21 @@ if __name__ == "__main__":
     # Globally request and turn on the backlight EXACTLY like the manual script
     import gpiod
     from gpiod.line import Direction, Value
+
     logger.info("Globally initializing backlight (GPIO 12)...")
     try:
         chip = gpiod.Chip("/dev/gpiochip0")
-        global_req_blk = chip.request_lines(config={12: gpiod.LineSettings(direction=Direction.OUTPUT)})
-        global_req_blk.set_value(12, Value.ACTIVE)
+        global_req_blk = chip.request_lines(
+            config={12: gpiod.LineSettings(direction=Direction.OUTPUT)}
+        )
+        global_req_blk.set_value(12, Value.INACTIVE)
         logger.info("Global backlight set to ACTIVE (ON).")
     except Exception as e:
         logger.error(f"Failed to initialize global backlight: {e}")
 
     active_display = render_display()
 
-    # Keep the container running and enforce backlight
+    # Keep the container running
     logger.info("Entering idle loop to keep container alive...")
     while True:
-        try:
-            global_req_blk.set_value(12, Value.ACTIVE)
-        except:
-            pass
         time.sleep(10)
