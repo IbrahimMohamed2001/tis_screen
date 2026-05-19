@@ -108,20 +108,19 @@ class ST7789:
 
         # Request lines
         try:
+            self.pin_states = {
+                DC_PIN: Value.INACTIVE,
+                RST_PIN: Value.INACTIVE,
+                BLK_PIN: Value.INACTIVE
+            }
             self.request = gpiod.request_lines(
                 self.chip_path,
                 consumer="ST7789",
                 config={
-                    DC_PIN: gpiod.LineSettings(
-                        direction=Direction.OUTPUT, output_value=Value.INACTIVE
-                    ),
-                    RST_PIN: gpiod.LineSettings(
-                        direction=Direction.OUTPUT, output_value=Value.INACTIVE
-                    ),
-                    BLK_PIN: gpiod.LineSettings(
-                        direction=Direction.OUTPUT, output_value=Value.INACTIVE
-                    ),
-                },
+                    DC_PIN: gpiod.LineSettings(direction=Direction.OUTPUT, output_value=self.pin_states[DC_PIN]),
+                    RST_PIN: gpiod.LineSettings(direction=Direction.OUTPUT, output_value=self.pin_states[RST_PIN]),
+                    BLK_PIN: gpiod.LineSettings(direction=Direction.OUTPUT, output_value=self.pin_states[BLK_PIN])
+                }
             )
             logger.debug("GPIO lines successfully requested as OUTPUT.")
         except Exception as e:
@@ -133,7 +132,8 @@ class ST7789:
     def _set_pin(self, pin, value):
         try:
             val = Value.ACTIVE if value else Value.INACTIVE
-            self.request.set_value(pin, val)
+            self.pin_states[pin] = val
+            self.request.set_values(self.pin_states)
         except Exception as e:
             logger.error(f"Error setting pin {pin} to {value}: {e}")
 
