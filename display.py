@@ -106,21 +106,22 @@ class ST7789:
             )
             raise RuntimeError("No suitable gpiochip found.")
 
-        # Request lines
+        # Request lines separately to prevent multi-line state bugs
         try:
-            self.pin_states = {
-                DC_PIN: Value.INACTIVE,
-                RST_PIN: Value.INACTIVE,
-                BLK_PIN: Value.INACTIVE
-            }
-            self.request = gpiod.request_lines(
+            self.req_dc = gpiod.request_lines(
                 self.chip_path,
-                consumer="ST7789",
-                config={
-                    DC_PIN: gpiod.LineSettings(direction=Direction.OUTPUT, output_value=self.pin_states[DC_PIN]),
-                    RST_PIN: gpiod.LineSettings(direction=Direction.OUTPUT, output_value=self.pin_states[RST_PIN]),
-                    BLK_PIN: gpiod.LineSettings(direction=Direction.OUTPUT, output_value=self.pin_states[BLK_PIN])
-                }
+                consumer="ST7789_DC",
+                config={DC_PIN: gpiod.LineSettings(direction=Direction.OUTPUT, output_value=Value.INACTIVE)}
+            )
+            self.req_rst = gpiod.request_lines(
+                self.chip_path,
+                consumer="ST7789_RST",
+                config={RST_PIN: gpiod.LineSettings(direction=Direction.OUTPUT, output_value=Value.INACTIVE)}
+            )
+            self.req_blk = gpiod.request_lines(
+                self.chip_path,
+                consumer="ST7789_BLK",
+                config={BLK_PIN: gpiod.LineSettings(direction=Direction.OUTPUT, output_value=Value.INACTIVE)}
             )
             logger.debug("GPIO lines successfully requested as OUTPUT.")
         except Exception as e:
@@ -132,8 +133,12 @@ class ST7789:
     def _set_pin(self, pin, value):
         try:
             val = Value.ACTIVE if value else Value.INACTIVE
-            self.pin_states[pin] = val
-            self.request.set_values(self.pin_states)
+            if pin == DC_PIN:
+                self.req_dc.set_value(DC_PIN, val)
+            elif pin == RST_PIN:
+                self.req_rst.set_value(RST_PIN, val)
+            elif pin == BLK_PIN:
+                self.req_blk.set_value(BLK_PIN, val)
         except Exception as e:
             logger.error(f"Error setting pin {pin} to {value}: {e}")
 
