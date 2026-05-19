@@ -2,8 +2,6 @@ import os
 import time
 import json
 import struct
-
-# import spidev
 import gpiod
 from gpiod.line import Direction, Value
 import fcntl
