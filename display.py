@@ -106,6 +106,7 @@ class ST7789:
             )
             raise RuntimeError("No suitable gpiochip found.")
 
+        try:
             self.req_dc = gpiod.request_lines(
                 self.chip_path,
                 consumer="ST7789_DC",
