@@ -3,6 +3,7 @@ import time
 import json
 import struct
 import spidev
+import gpiod
 import logging
 from PIL import Image, ImageDraw, ImageFont
 
@@ -28,34 +29,6 @@ ST7789_MADCTL  = 0x36
 DC_PIN = 23
 RST_PIN = 25
 BLK_PIN = 12
-
-def init_gpio_pin(pin):
-    """Initialize a GPIO pin using sysfs."""
-    path = f"/sys/class/gpio/gpio{pin}"
-    logger.debug(f"Initializing GPIO pin {pin} at {path}")
-    if not os.path.exists(path):
-        try:
-            logger.debug(f"Exporting GPIO pin {pin}")
-            with open("/sys/class/gpio/export", "w") as f:
-                f.write(str(pin))
-            time.sleep(0.1) # Wait for kernel to create the node
-        except Exception as e:
-            logger.warning(f"Could not export GPIO {pin}: {e}")
-    try:
-        logger.debug(f"Setting direction 'out' for GPIO pin {pin}")
-        with open(f"{path}/direction", "w") as f:
-            f.write("out")
-    except Exception as e:
-        logger.warning(f"Could not set direction for GPIO {pin}: {e}")
-    return path
-
-def set_gpio_value(path, value):
-    """Set the value of a sysfs GPIO pin."""
-    try:
-        with open(f"{path}/value", "w") as f:
-            f.write("1" if value else "0")
-    except Exception as e:
-        logger.error(f"Failed to set GPIO value for {path}: {e}")
 
 def get_integration_version():
     """Read the custom integration version directly from the mapped HA config folder."""
@@ -88,21 +61,53 @@ class ST7789:
             logger.error(f"Failed to open SPI: {e}")
             raise
             
-        # Init GPIO via SysFS
-        logger.info("Initializing GPIOs via SysFS...")
-        self.dc_path = init_gpio_pin(DC_PIN)
-        self.rst_path = init_gpio_pin(RST_PIN)
-        self.blk_path = init_gpio_pin(BLK_PIN)
+        # Init GPIO via libgpiod
+        logger.info("Initializing GPIOs via gpiod...")
+        self.chip = None
+        logger.debug("Searching for BCM gpiochip...")
+        for chip_path in gpiod.find_gpio_chips():
+            try:
+                chip = gpiod.Chip(chip_path)
+                lines = chip.num_lines()
+                logger.debug(f"Found {chip_path} with {lines} lines.")
+                if lines == 58 or lines == 54:  # BCM2711 usually has 58 lines
+                    self.chip = chip
+                    logger.info(f"Selected {chip_path} as the main GPIO controller.")
+                    break
+            except Exception as e:
+                logger.warning(f"Failed to inspect {chip_path}: {e}")
+                
+        if not self.chip:
+            logger.critical("Could not find a suitable BCM gpiochip! Are we running with full_access: true?")
+            raise RuntimeError("No suitable gpiochip found.")
+            
+        # Request lines
+        try:
+            self.dc_line = self.chip.get_line(DC_PIN)
+            self.dc_line.request(consumer="ST7789_DC", type=gpiod.LINE_REQ_DIR_OUT)
+            
+            self.rst_line = self.chip.get_line(RST_PIN)
+            self.rst_line.request(consumer="ST7789_RST", type=gpiod.LINE_REQ_DIR_OUT)
+            
+            self.blk_line = self.chip.get_line(BLK_PIN)
+            self.blk_line.request(consumer="ST7789_BLK", type=gpiod.LINE_REQ_DIR_OUT)
+            logger.debug("GPIO lines successfully requested as OUTPUT.")
+        except Exception as e:
+            logger.critical(f"Failed to request GPIO lines: {e}")
+            raise
         
         self.init_display()
 
     def _set_pin(self, pin, value):
-        if pin == DC_PIN:
-            set_gpio_value(self.dc_path, value)
-        elif pin == RST_PIN:
-            set_gpio_value(self.rst_path, value)
-        elif pin == BLK_PIN:
-            set_gpio_value(self.blk_path, value)
+        try:
+            if pin == DC_PIN:
+                self.dc_line.set_value(1 if value else 0)
+            elif pin == RST_PIN:
+                self.rst_line.set_value(1 if value else 0)
+            elif pin == BLK_PIN:
+                self.blk_line.set_value(1 if value else 0)
+        except Exception as e:
+            logger.error(f"Error setting pin {pin} to {value}: {e}")
 
     def send_cmd(self, cmd):
         self._set_pin(DC_PIN, 0)
