@@ -106,8 +106,6 @@ class ST7789:
             )
             raise RuntimeError("No suitable gpiochip found.")
 
-        # Request lines separately to prevent multi-line state bugs
-        try:
             self.req_dc = gpiod.request_lines(
                 self.chip_path,
                 consumer="ST7789_DC",
@@ -126,15 +124,6 @@ class ST7789:
                     )
                 },
             )
-            self.req_blk = gpiod.request_lines(
-                self.chip_path,
-                consumer="ST7789_BLK",
-                config={
-                    BLK_PIN: gpiod.LineSettings(
-                        direction=Direction.OUTPUT
-                    )
-                },
-            )
             logger.debug("GPIO lines successfully requested as OUTPUT.")
         except Exception as e:
             logger.critical(f"Failed to request GPIO lines: {e}")
@@ -149,8 +138,6 @@ class ST7789:
                 self.req_dc.set_value(DC_PIN, val)
             elif pin == RST_PIN:
                 self.req_rst.set_value(RST_PIN, val)
-            elif pin == BLK_PIN:
-                self.req_blk.set_value(BLK_PIN, val)
         except Exception as e:
             logger.error(f"Error setting pin {pin} to {value}: {e}")
 
@@ -195,10 +182,7 @@ class ST7789:
         time.sleep(0.01)
         self.send_cmd(ST7789_DISPON)
         time.sleep(0.1)
-
-        # Turn on Backlight
-        logger.info("Turning ON backlight (BLK_PIN=1)...")
-        self._set_pin(BLK_PIN, 1)
+        
         logger.info("Hardware initialization complete.")
 
     def set_window(self, x0, y0, x1, y1):
@@ -348,19 +332,31 @@ def render_display():
     else:
         logger.info("Image processing complete. Sending to display hardware via SPI...")
         display.display_image(img)
-        logger.info("SPI transfer complete. Enforcing backlight ON.")
-        display._set_pin(12, 1)
 
     logger.info("=== Display rendering successfully finished ===")
     return display
 
 
 if __name__ == "__main__":
+    # Globally request and turn on the backlight EXACTLY like the manual script
+    import gpiod
+    from gpiod.line import Direction, Value
+    logger.info("Globally initializing backlight (GPIO 12)...")
+    try:
+        chip = gpiod.Chip("/dev/gpiochip0")
+        global_req_blk = chip.request_lines(config={12: gpiod.LineSettings(direction=Direction.OUTPUT)})
+        global_req_blk.set_value(12, Value.ACTIVE)
+        logger.info("Global backlight set to ACTIVE (ON).")
+    except Exception as e:
+        logger.error(f"Failed to initialize global backlight: {e}")
+
     active_display = render_display()
 
-    # Keep the container running
+    # Keep the container running and enforce backlight
     logger.info("Entering idle loop to keep container alive...")
     while True:
-        if active_display:
-            active_display._set_pin(12, 1)
+        try:
+            global_req_blk.set_value(12, Value.ACTIVE)
+        except:
+            pass
         time.sleep(10)
