@@ -206,17 +206,21 @@ class ST7789:
 def render_display():
     logger.info("=== Starting display rendering ===")
     
-    # Check for framebuffer
-    if os.path.exists("/dev/fb0"):
-        logger.warning("!!! /dev/fb0 DETECTED !!! The OS has already loaded a frame buffer driver for a screen! If the physical display is owned by this driver, our manual SPI commands will be ignored or conflict with the kernel.")
+    use_fb0 = os.path.exists("/dev/fb0")
+    if use_fb0:
+        logger.warning("!!! /dev/fb0 DETECTED !!! The OS has already loaded a frame buffer driver for a screen. We will write to /dev/fb0 directly.")
+    else:
+        logger.info("No /dev/fb0 detected, using direct SPI and gpiod.")
 
     version = get_integration_version()
 
-    try:
-        display = ST7789(width=240, height=320)
-    except Exception as e:
-        logger.critical(f"Failed to initialize ST7789: {e}")
-        return
+    display = None
+    if not use_fb0:
+        try:
+            display = ST7789(width=240, height=320)
+        except Exception as e:
+            logger.critical(f"Failed to initialize ST7789: {e}")
+            return
 
     # Attempt to load the logo
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -270,8 +274,31 @@ def render_display():
     # Draw main text
     draw.text((x, y), text, font=font, fill=(255, 255, 255))
 
-    logger.info("Image processing complete. Sending to display hardware...")
-    display.display_image(img)
+    if use_fb0:
+        logger.info("Writing image directly to /dev/fb0...")
+        # Framebuffer RGB565 is little-endian on ARM
+        r, g, b = img.split()
+        r_data = list(r.getdata())
+        g_data = list(g.getdata())
+        b_data = list(b.getdata())
+        
+        fb_data = bytearray(240 * 320 * 2)
+        for i in range(len(r_data)):
+            pixel = ((r_data[i] & 0xF8) << 8) | ((g_data[i] & 0xFC) << 3) | (b_data[i] >> 3)
+            # Little-endian byte order for /dev/fb0
+            fb_data[i*2] = pixel & 0xFF
+            fb_data[i*2+1] = pixel >> 8
+            
+        try:
+            with open("/dev/fb0", "wb") as f:
+                f.write(fb_data)
+            logger.info("Framebuffer write complete.")
+        except Exception as e:
+            logger.error(f"Failed to write to /dev/fb0: {e}")
+    else:
+        logger.info("Image processing complete. Sending to display hardware via SPI...")
+        display.display_image(img)
+        
     logger.info("=== Display rendering successfully finished ===")
 
 if __name__ == "__main__":
