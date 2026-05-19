@@ -2,9 +2,11 @@ import os
 import time
 import json
 import struct
-import spidev
+
+# import spidev
 import gpiod
 from gpiod.line import Direction, Value
+import fcntl
 import logging
 from PIL import Image, ImageDraw, ImageFont
 
@@ -54,21 +56,28 @@ class ST7789:
         self.width = width
         self.height = height
 
-        # Init SPI
-        logger.info(f"Initializing SPI on bus {bus}, device {device}")
+        # --- Pure Python SPI Initialization ---
+        logger.info(f"Initializing SPI on bus {bus}, device {device} natively")
         try:
-            self.spi = spidev.SpiDev()
-            self.spi.open(bus, device)
-            self.spi.max_speed_hz = 10000000  # Lowered to 10MHz for debugging
-            self.spi.mode = 0
-            logger.debug(
-                f"SPI initialized successfully (Mode: {self.spi.mode}, Speed: {self.spi.max_speed_hz}Hz)"
+            self.spi_fd = os.open(f"/dev/spidev{bus}.{device}", os.O_RDWR)
+
+            # Linux SPI ioctl magic numbers
+            SPI_IOC_WR_MODE = 0x40016B01
+            SPI_IOC_WR_MAX_SPEED_HZ = 0x40046B04
+
+            # Set SPI Mode 0 (CPOL=0, CPHA=0) -> Pack as unsigned char ('B')
+            fcntl.ioctl(self.spi_fd, SPI_IOC_WR_MODE, struct.pack("B", 0))
+
+            # Set Max Speed 10MHz -> Pack as unsigned int ('I')
+            fcntl.ioctl(
+                self.spi_fd, SPI_IOC_WR_MAX_SPEED_HZ, struct.pack("I", 10000000)
             )
+
+            logger.debug("Native SPI initialized successfully (Mode: 0, Speed: 10MHz)")
         except Exception as e:
-            logger.error(f"Failed to open SPI: {e}")
+            logger.error(f"Failed to open native SPI: {e}")
             raise
 
-        # Init GPIO via libgpiod
         logger.info("Initializing GPIOs via gpiod...")
         self.chip_path = None
         logger.debug("Searching for BCM gpiochip...")
@@ -144,14 +153,20 @@ class ST7789:
 
     def send_cmd(self, cmd):
         self._set_pin(DC_PIN, 0)
-        self.spi.writebytes2([cmd])
+        os.write(self.spi_fd, bytes([cmd]))
 
     def send_data(self, data):
         self._set_pin(DC_PIN, 1)
         if isinstance(data, int):
-            self.spi.writebytes2([data])
+            os.write(self.spi_fd, bytes([data]))
         else:
-            self.spi.writebytes2(data)
+            # os.write accepts bytes, bytearray, or memoryview
+            os.write(self.spi_fd, bytes(data))
+
+    def __del__(self):
+        """Ensure the file descriptor is closed when the object is destroyed."""
+        if hasattr(self, "spi_fd"):
+            os.close(self.spi_fd)
 
     def init_display(self):
         logger.info("Starting ST7789 hardware initialization sequence...")
@@ -204,9 +219,24 @@ class ST7789:
 
         # Convert to raw RGB565 byte array
         r, g, b = image.split()
-        r_data = list(r.getdata())
-        g_data = list(g.getdata())
-        b_data = list(b.getdata())
+
+        # Using getdata() threw a DeprecationWarning in your logs.
+        # Pillow recommends get_flattened_data() for single bands in newer versions.
+        r_data = (
+            list(r.getdata())
+            if not hasattr(r, "get_flattened_data")
+            else r.get_flattened_data()
+        )
+        g_data = (
+            list(g.getdata())
+            if not hasattr(g, "get_flattened_data")
+            else g.get_flattened_data()
+        )
+        b_data = (
+            list(b.getdata())
+            if not hasattr(b, "get_flattened_data")
+            else b.get_flattened_data()
+        )
 
         rgb565 = bytearray(self.width * self.height * 2)
 
@@ -217,14 +247,19 @@ class ST7789:
             rgb565[i * 2] = pixel >> 8
             rgb565[i * 2 + 1] = pixel & 0xFF
 
-        logger.info("Writing pixel data to SPI bus...")
+        logger.info("Writing pixel data to SPI bus natevely...")
         self.set_window(0, 0, self.width - 1, self.height - 1)
         self._set_pin(DC_PIN, 1)
 
-        # Send data in chunks
+        # --- REFACTORED SPI TRANSFER ---
+        # Use memoryview to slice the bytearray without copying it into RAM
+        # This is significantly faster and uses less memory on the CM4
+        mv = memoryview(rgb565)
         chunk_size = 4096
-        for i in range(0, len(rgb565), chunk_size):
-            self.spi.writebytes2(rgb565[i : i + chunk_size])
+
+        for i in range(0, len(mv), chunk_size):
+            # Use pure python os.write instead of spidev
+            os.write(self.spi_fd, mv[i : i + chunk_size])
 
         logger.info("Pixel data transfer complete.")
 
